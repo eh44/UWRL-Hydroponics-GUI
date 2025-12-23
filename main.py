@@ -209,7 +209,7 @@ def show_first_image():
     image_url = f'/hydro_data/uploads/{filename}'
     image_container.clear()
     with image_container:
-        ui.label("Click 4 corners of the original image):").classes('text-lg font-bold text-gray-700')
+        ui.label("Click 4 corners of the original image to crop:").classes('text-lg font-bold text-gray-700')
         ii = ui.interactive_image(image_url, on_mouse=on_image_click, events=['click'], cross=True)
         ii.classes('w-full rounded-lg shadow-md border-2 border-gray-300')
     ui.timer(0.1, lambda: image_container.run_method('scrollIntoView', {'behavior': 'smooth', 'block': 'center'}), once=True)
@@ -393,4 +393,4 @@ def main_page():
 # --- ENTRY POINT ---
 if __name__ in {"__main__", "__mp_main__"}:
     main_page()
-    ui.run(title="Hydroponic Analysis", port=8080, show=False)
+    ui.run(title="Hydroponic Analysis", port=8080, show=False,favicon='🌱')
