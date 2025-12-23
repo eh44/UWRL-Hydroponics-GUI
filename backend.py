@@ -1,417 +1,248 @@
-from nicegui import ui
 import os
 import cv2
 import glob
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
 from plantcv.parallel import WorkflowInputs
 from plantcv import plantcv as pcv
-from PIL import Image
 import zipfile
 import tempfile
 import shutil
-##### BAD GROWTH #######
+
 def zip_output_folder(folder: Path, zip_path: Path):
     with zipfile.ZipFile(zip_path, 'w') as zipf:
         for file in folder.rglob('*'):
             zipf.write(file, arcname=file.relative_to(folder))
+    return str(zip_path)
 
-def run_growth(folder, mask_folder, growth_sess,output_folder):
-    # Loop through the pictures in the input directory files to do analysis
-    count = 0
-    image_extensions = ['*.png', '*.jpg', '*.jpeg']
-    image_files = []
-    for ext in image_extensions:
-        image_files.extend(glob.glob(os.path.join(folder, ext)))
-    for name in image_files:
-        # Our workflow, don't worry about this, as well as input/output options
-        args = WorkflowInputs(
-            images=["test.jpg"],    
-            names="image1",
-            result="lettuce_results",
-            outdir=".",
-            writeimg=True,
-            debug="none",
-            sample_label="genotype"
-            )
+def generate_mask(plant_image):
+    if plant_image is None: return None
+    MIN_PART_AREA = 100             
+    GIANT_PLANT_RATIO = 0.03       
+    MEDIUM_PART_RATIO = 0.005      
+    MIN_KEEP_RATIO = 0.10          
 
-    # Set debug to the global parameter 
-        pcv.params.debug = args.debug
-
-    # Set plotting size (default = 100)
-        pcv.params.dpi = 100
-
-    # Increase text size and thickness to make labels clearer
-        pcv.params.text_size = 10
-        pcv.params.text_thickness = 20
-
-    # Read image in called "name", where "name" is our looping variable, which is the image we are currently looping by
-        img = cv2.imread(name)
-
-    # More specific directories used to get the image and corresponding mask to do analysis based on a time series    
-    # Declare arrays and append the corresponding mask and image we are currently looping through    
-        images_path_sort = []
-        masks_path_sort = []
-        images_path_sort.append(name)
-        # This parameter is a direct copy of the line we used to save the masks to ensure we grab exactly the right mask (no typos!) 
-        masks_path_sort.append(mask_folder + f"/mask{count}.png")
-
-    # Sort the lists (will do by date automatically due to that being that being the difference in name)      
-        images_path_sort = sorted(images_path_sort)
-        masks_path_sort = sorted(masks_path_sort)
-
-    # We will be using the first image in the time series to make our base roi
-        i = 0
-        try:
-            img0,_,_ = pcv.readimage(filename=next(Path(folder).rglob('*.png')))
-        except StopIteration:
-            print("❌ No .png files found.")
-            return
-        
-    # Turn the first image into LAB colorspace, which we will use to make our roi which is used for the time series analysis
-        lab = cv2.cvtColor(img0, cv2.COLOR_BGR2LAB)
-    # Store the a-channel
-        a_channel = lab[:,:,1]
-    # Automate threshold using Otsu method, which finds the green pixels and keeps them
-        th = cv2.threshold(a_channel,127,255,cv2.THRESH_BINARY_INV+cv2.THRESH_OTSU)[1]
-    # This is for labeling our masked objects as plants    
-        pcv.params.sample_label = "plant"
-
-    # Remove small background noise
-        th_fill = pcv.fill(bin_img=th, size=200)
-    # Make the roi with the th_fill mask which can identify the plants in the image
-        rois = pcv.roi.auto_grid(mask=th_fill, nrows=6, ncols=3, img=img0)
-    # Get the contours from the roi object, which is the number of plants (18)    
-        valid_rois=rois.contours
-    # Create a time series of previous images to segment the image based on previous ones to deal with the overlapping of leaves    
-        out = pcv.segment_image_series(images_path_sort, masks_path_sort,  valid_rois , save_labels=True, ksize=3)
-    # Take the most recent segmentation (which is a binary mask) from the output to do our analysis on    
-        most_recent_slice = out[:, :, -1]
-
-        # Measure each plant 
-        shape_img = pcv.analyze.size(img=img, labeled_mask=most_recent_slice, n_labels=18)
-        # Extract color data of objects and produce a histogram, in this case the RGB channel
-        shape_img = pcv.analyze.color(rgb_img=img, labeled_mask=most_recent_slice, n_labels=18, colorspaces="RGB")
-
-        # Save outputs with ALL the color and size data to a .csv file to pick apart later for each date
-        print(growth_sess + '/'+args.result+ '_'+ name.split(f'{folder}/')[1].split('.')[0] + '.csv')
-        pcv.outputs.save_results(filename = growth_sess + '/'+args.result+ '_'+ name.split(f'{folder}/')[1].split('.')[0] + '.csv', outformat="CSV")
-        count +=1  
-    # Now for grabbing the data we want from the csv files that were created for each picture and its date
-    # Creates a variable from the folder from which we're getting our .csv files to mash together
-
-    # Creating an array to hold all of our dataframes
-    dfs =[]
-
-    # Loop through all the .csv files 
-    input_directory2 =growth_sess
-    for file in glob.glob(os.path.join(input_directory2, '*.csv')):
-        df = pd.read_csv(file, delimiter = ',')
-
-    # Take the date out of the name
-        print(file)
-        date = file.split('s_')[1].split('.')[0]
-        print(date)
-
-    # Add a new column in the csv files for the date of the picture
-        df['date'] = date
-        df['date'] = pd.to_datetime(df['date'])
-        df['date'] = df['date'].dt.date
-
-    # Only keep the traits that aren't the red or blue frequencies
-        df = df[(df['trait'] != 'red_frequencies') & (df['trait'] != 'blue_frequencies')]
-
-    # Add the dataframe to dfs to create a large array
-        dfs.append(df)
-        
-     # Turn our array of dfs to a csv file and save under Master.csv (can change based on where to save the file!)
-    master_path = growth_sess +'/'+ 'Master.csv'
-    pd.concat(dfs).to_csv(master_path, index = False)
-
-
-    # Read back in our massive CSV file to make seperate smaller ones
-    df = pd.read_csv(master_path)
-
-    # Make an originally sorted copy otherwise our data will be messy because we sort later on in terms of date
-    df_original = df.copy()
-
-    # Loop through the sample (plant_1 ... plant_18) from the Master.csv file
-    for plant in df_original['sample'].unique():
-
-    # Create a plot of the green frequencies for the current plant 
-        sns.lineplot(
-            
-    #Plot the green frequncies for every plant using the original sorting
-            data=df_original[(df_original['sample'] == plant) & (df_original['trait'] == 'green_frequencies')],
-            
-    # These are what are going to be on our axis, label and value are found as headers in the .csv files
-    # More specifically, x = 0-255 for green range, y = percentage of pixels 
-            x='label',
-            y='value',
-
-    # This gives us a different graph with a different color based on the date the picture was taken
-            hue='date'
-        )
-    # Give a title to the graph based on current plant
-        plt.title(plant)
-
-    # Move the legend to the left of the graph
-        plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
-        
-    # Give the x and y axis a name
-        plt.xlabel('Green Frequencies') 
-        plt.ylabel('Percent of Pixels')
-        
+    B, G, R = cv2.split(plant_image)
+    B_f, G_f, R_f = B.astype(float), G.astype(float), R.astype(float)
     
+    try:
+        lab_image = cv2.cvtColor(plant_image, cv2.COLOR_BGR2LAB)
+        hsv_image = cv2.cvtColor(plant_image, cv2.COLOR_BGR2HSV)
+        L, _, _ = cv2.split(lab_image)
+        H, _, V = cv2.split(hsv_image)
+        if L.size == 0: return np.zeros(plant_image.shape[:2], dtype=np.uint8)
+        l_95 = np.percentile(L, 15)
+        h_90 = np.percentile(H, 10)
+        v_90 = np.percentile(V, 15)
+        g_90 = np.percentile(G, 100)
+    except Exception:
+        return np.zeros(plant_image.shape[:2], dtype=np.uint8)
+
+    bg_sum = B_f + G_f
+    _, too_bright_mask = cv2.threshold(bg_sum, 350, 255, cv2.THRESH_BINARY)
+    too_bright_mask = too_bright_mask.astype(np.uint8)
+    
+    valid_parts_mask = cv2.bitwise_not(too_bright_mask)
+    kernel_parts = np.ones((5,5), np.uint8)
+    valid_parts_mask = cv2.morphologyEx(valid_parts_mask, cv2.MORPH_OPEN, kernel_parts)
+    
+    image_no_white_bg = cv2.bitwise_and(plant_image, plant_image, mask=valid_parts_mask)
+    grayscale_no_white_bg = cv2.cvtColor(image_no_white_bg, cv2.COLOR_BGR2GRAY)
+    
+    contours, _ = cv2.findContours(valid_parts_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    valid_pixel_values_count = cv2.countNonZero(valid_parts_mask)
+    
+    final_combined_mask = None
+
+    if valid_pixel_values_count > 0 and len(contours) > 0:
+        max_contour_area = max([cv2.contourArea(c) for c in contours])
+        dominance_ratio = max_contour_area / valid_pixel_values_count
+        if dominance_ratio > 0.8 and (v_90 + h_90 < 75) and g_90 < 250 and l_95 < 41:
+            final_combined_mask = np.ones_like(grayscale_no_white_bg) * 255
+    
+    if final_combined_mask is None:
+        final_plant_mask_reconstructed = np.zeros_like(grayscale_no_white_bg)
+        h, w = grayscale_no_white_bg.shape[:2]
+        total_image_area = h * w
+        rgb_sum_map = R_f + G_f + B_f
+        valid_pixels = rgb_sum_map[valid_parts_mask > 0]
+        if len(valid_pixels) > 0:
+            p90_value = np.percentile(valid_pixels, 90)
+            STRICT_BRIGHTNESS_LIMIT = min(max(500, int(p90_value)), 500)
+        else:
+            STRICT_BRIGHTNESS_LIMIT = 450
         
-    # Save the plot to a folder that is named the current plant, and label it as the green frequency plot
-        plt.savefig(growth_sess+f'/{plant}_green_freqs.png',  bbox_inches='tight')
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < MIN_PART_AREA: continue
+            part_isolation_mask = np.zeros_like(grayscale_no_white_bg)
+            cv2.drawContours(part_isolation_mask, [contour], -1, 255, cv2.FILLED)
+            isolated_part_rgb = cv2.bitwise_and(image_no_white_bg, image_no_white_bg, mask=part_isolation_mask)
+            
+            if area > (total_image_area * GIANT_PLANT_RATIO):
+                B_part, G_part, R_part = cv2.split(isolated_part_rgb)
+                bg_sum_part = B_part.astype(float) + G_part.astype(float) + R_part.astype(float)
+                _, too_bright_strict = cv2.threshold(bg_sum_part, STRICT_BRIGHTNESS_LIMIT, 255, cv2.THRESH_BINARY)
+                strict_part_mask = cv2.bitwise_and(part_isolation_mask, cv2.bitwise_not(too_bright_strict.astype(np.uint8)))
+                holes_inv = cv2.bitwise_not(strict_part_mask)
+                holes_inv = cv2.bitwise_and(holes_inv, part_isolation_mask)
+                cnts_holes, _ = cv2.findContours(holes_inv, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for hole in cnts_holes:
+                    if cv2.contourArea(hole) < 1000:
+                        cv2.drawContours(strict_part_mask, [hole], -1, 255, cv2.FILLED)
+                final_plant_mask_reconstructed = cv2.bitwise_or(final_plant_mask_reconstructed, strict_part_mask)
+            else:
+                isolated_part_lab = cv2.cvtColor(isolated_part_rgb, cv2.COLOR_BGR2LAB)
+                l_chan, a_chan, _ = cv2.split(isolated_part_lab)
+                content_mask_adaptive = (l_chan > 5).astype(np.uint8) * 255
+                pixel_count_total = cv2.countNonZero(content_mask_adaptive)
+                if pixel_count_total > 0:
+                    a_neutral = a_chan.copy()
+                    a_neutral[content_mask_adaptive == 0] = 128
+                    adaptive_thresh_strict = cv2.adaptiveThreshold(a_neutral, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 41, 5)
+                    mask_lab = cv2.bitwise_and(adaptive_thresh_strict, content_mask_adaptive)
+                    mask_lab = cv2.morphologyEx(mask_lab, cv2.MORPH_OPEN, np.ones((3,3), np.uint8))
+                    
+                    B_part, G_part, R_part = cv2.split(isolated_part_rgb)
+                    exg_part_raw = G_part.astype(float)*3.2 - (B_part.astype(float))-(R_part.astype(float))*1.2
+                    exg_part_norm = cv2.normalize(exg_part_raw, None, 0, 255, cv2.NORM_MINMAX)
+                    exg_part_uint8 = exg_part_norm.astype(np.uint8)
+                    mask_exg_adaptive = cv2.adaptiveThreshold(exg_part_uint8, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 41, 15)
+                    _, mask_exg_abs = cv2.threshold(exg_part_raw, 0, 255, cv2.THRESH_BINARY)
+                    mask_exg = cv2.bitwise_and(mask_exg_adaptive, mask_exg_abs.astype(np.uint8))
+                    mask_exg = cv2.bitwise_and(mask_exg, content_mask_adaptive)
+                    mask_combined = cv2.bitwise_or(mask_lab, mask_exg)
+                    pixel_count_kept = cv2.countNonZero(mask_combined)
+                    keep_ratio = pixel_count_kept / pixel_count_total
+                    is_medium = area > (total_image_area * MEDIUM_PART_RATIO)
+                    if is_medium and keep_ratio < MIN_KEEP_RATIO:
+                        final_plant_mask_reconstructed = cv2.bitwise_or(final_plant_mask_reconstructed, part_isolation_mask)
+                    else:
+                        final_plant_mask_reconstructed = cv2.bitwise_or(final_plant_mask_reconstructed, mask_combined)
+
+        union_mask = final_plant_mask_reconstructed 
+        inverse_mask = cv2.bitwise_not(union_mask)
+        contours_holes, _ = cv2.findContours(inverse_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        MAX_GLOBAL_HOLE_SIZE = 5000
+        for hole in contours_holes:
+            if cv2.contourArea(hole) < MAX_GLOBAL_HOLE_SIZE:
+                cv2.drawContours(union_mask, [hole], -1, 255, cv2.FILLED)
         
-    # Clear the plot to reset it!
-        plt.clf()
+        bg_sum = B_f + G_f
+        _, too_bright_mask_final = cv2.threshold(bg_sum, 325, 255, cv2.THRESH_BINARY)
+        allowed_intensity_mask = cv2.bitwise_not(too_bright_mask_final.astype(np.uint8))
+        final_combined_mask = cv2.bitwise_and(union_mask, union_mask, mask=allowed_intensity_mask)
+        final_combined_mask = cv2.morphologyEx(final_combined_mask, cv2.MORPH_OPEN, np.ones((3,3), np.uint8))
 
-    # Sort dataframe by 'date' so that the x axis is in order
-        df = df.sort_values(by='date')
+    return final_combined_mask
 
-    # Plot a line that shows the growth in area for the current plant over the dates taken
-        sns.lineplot(
-            data = df[(df['sample'] == plant) & (df['trait'] == 'area')],
-            x ='date',
-            y= 'value'
-        )
-        plt.title(plant +' area')
-        plt.ylabel('Area in pixels')
+def run_mask(input_folder, output_zip_path, progress_callback=None):
+    output_folder = os.path.join(tempfile.gettempdir(), "masks_temp")
+    if os.path.exists(output_folder): shutil.rmtree(output_folder)
+    os.makedirs(output_folder, exist_ok=True)
+    image_files = sorted(glob.glob(os.path.join(input_folder, '*.*')))
+    total_files = len(image_files)
+    count = 0
+    for idx, file in enumerate(image_files):
+        if progress_callback: progress_callback((idx + 1) / total_files)
+        if not file.lower().endswith(('.png', '.jpg', '.jpeg')): continue
+        plant_image = cv2.imread(file)
+        if plant_image is None: continue
+        mask = generate_mask(plant_image)
+        output_image_path = os.path.join(output_folder, f"mask{count}.png")
+        cv2.imwrite(output_image_path, mask)
+        count += 1
+    zip_file = os.path.join(output_zip_path, "masks.zip")
+    return zip_output_folder(Path(output_folder), Path(zip_file))
 
-    # Rotate x-axis labels for better readability
-        plt.xticks(rotation=45)
-        
-    # Save the plot to a folder that is named the current plant, and label it as the area plot
-        print(growth_sess+f'/{plant}_area.png')
-        plt.savefig(growth_sess+f'/{plant}_area.png',  bbox_inches='tight')
-        
-    # Clear the plot again to reset it
-        plt.clf()
-    zip_output_folder(Path(growth_sess), Path(output_folder))
-
-##### TIMELAPSE #######
-def run_timelapse(folder, output_path, fps=2.0, size=(1280, 720)):
-    image_files = sorted([
-        os.path.join(folder, f)
-        for f in os.listdir(folder)
-        if f.lower().endswith(('.png', '.jpg', '.jpeg'))
-    ])
-
-    if not image_files:
-        ui.notify("[ERROR] No images found.")
-        return False
-
+def run_timelapse(folder, output_path, fps=2.0, size=None):
+    image_files = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+    if not image_files: return False
     frames = []
     for path in image_files:
-        try:
-            img = Image.open(path).convert("RGB").resize(size)
-            frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-            frames.append(frame)
-            ui.notify(f"[✅] Loaded: {os.path.basename(path)}")
-        except Exception as e:
-            ui.notify(f"[⚠️] Skipping {path}: {e}")
-
-    if not frames:
-        ui.notify("[ERROR] No valid frames.")
-        return False
-
+        img = cv2.imread(path)
+        if img is not None:
+            # Generate mask on fly to ensure color on black result
+            mask = generate_mask(img)
+            segmented = cv2.bitwise_and(img, img, mask=mask)
+            frames.append(segmented)
+    if not frames: return False
+    if size: video_w, video_h = size
+    else:
+        video_h = max(f.shape[0] for f in frames)
+        video_w = max(f.shape[1] for f in frames)
+        if video_h % 2 != 0: video_h += 1
+        if video_w % 2 != 0: video_w += 1
     try:
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_path, fourcc, fps, size)
-
+        out = cv2.VideoWriter(output_path, fourcc, fps, (video_w, video_h))
         for frame in frames:
-            out.write(frame)
+            h, w = frame.shape[:2]
+            canvas = np.zeros((video_h, video_w, 3), dtype=np.uint8)
+            y_off = max(0, (video_h - h) // 2)
+            x_off = max(0, (video_w - w) // 2)
+            h_crop = min(h, video_h)
+            w_crop = min(w, video_w)
+            canvas[y_off:y_off+h_crop, x_off:x_off+w_crop] = frame[:h_crop, :w_crop]
+            out.write(canvas)
         out.release()
-        ui.notify(f"[🎬] Wrote timelapse to: {output_path}")
         return True
     except Exception as e:
-        ui.notify(f"[❌] Failed to write video: {e}")
+        print(f"Timelapse Error: {e}")
         return False
 
-##### CROPPING #######
 def run_cropping(input_folder, output_folder, roi):
-
     os.makedirs(output_folder, exist_ok=True)
     x, y, w, h = roi
-
+    count = 0
     for filename in os.listdir(input_folder):
-        if not filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-            continue
+        if not filename.lower().endswith(('.png', '.jpg', '.jpeg')): continue
         filepath = os.path.join(input_folder, filename)
         image = cv2.imread(filepath)
-        if image is None:
-            ui.notify(f"⚠️ Could not read: {filename}")
-            continue
-
-        cropped = image[int(y):int(y + h), int(x):int(x + w)]
-        if cropped.size == 0:
-            print(f"❌ Empty crop for: {filename}")
-            continue
-
-        output_path = os.path.join(output_folder, filename)
-        cv2.imwrite(output_path, cropped)
-        print(f"✅ Cropped and saved: {filename}")
-
-##### MASKING #######
-def run_mask(input_folder, output_zip_path):
-    # ui.notify(f"[MASK] Running on folder: {input_folder}")
-    count = 0
-    output_folder = os.path.join(tempfile.gettempdir(), "masks")
-    os.makedirs(output_folder, exist_ok=True)
-
-    image_extensions = ['*.png', '*.jpg', '*.jpeg']
-    image_files = []
-    for ext in image_extensions:
-        image_files.extend(glob.glob(os.path.join(input_folder, ext)))
-
-    for file in image_files:
-        img = cv2.imread(file)
-        hsv_image = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-
-        lower_brown = np.array([10, 100, 20])
-        upper_brown = np.array([20, 255, 200])
-        lower_black = np.array([0, 0, 0])
-        upper_black = np.array([180, 255, 50])
-        lower_black2 = np.array([100, 59, 20])
-        upper_black2 = np.array([123, 140, 236])
-
-        black_mask = cv2.inRange(hsv_image, lower_black, upper_black)
-        black2_mask = cv2.inRange(hsv_image, lower_black2, upper_black2)
-        brown_mask = cv2.inRange(hsv_image, lower_brown, upper_brown)
-
-        combined_mask = black2_mask | black_mask | brown_mask
-        inverted_mask = cv2.bitwise_not(combined_mask)
-
-        kernel = np.ones((3, 3), np.uint8)
-        for i in range(4):
-            if i == 0:
-                eroded = cv2.erode(inverted_mask.copy(), kernel, iterations=i + 1)
-            else:
-                eroded = cv2.erode(dilated.copy(), kernel, iterations=i + 1)
-            dilated = cv2.dilate(eroded.copy(), kernel, iterations=i + 1)
-        filename = Path(file).stem 
-        output_image_path = os.path.join(output_folder, f"{filename}_mask.png")
-        cv2.imwrite(output_image_path, eroded)
+        if image is None: continue
+        img_h, img_w = image.shape[:2]
+        x1, y1 = max(0, x), max(0, y)
+        x2, y2 = min(img_w, x + w), min(img_h, y + h)
+        if x2 <= x1 or y2 <= y1: continue
+        cropped = image[y1:y2, x1:x2]
+        if cropped.size == 0: continue
+        cv2.imwrite(os.path.join(output_folder, filename), cropped)
         count += 1
-
-    zip_path = os.path.join(output_zip_path, "masks.zip")
-    with zipfile.ZipFile(zip_path, "w") as zipf:
-        for fname in os.listdir(output_folder):
-            fpath = os.path.join(output_folder, fname)
-            zipf.write(fpath, arcname=fname)
-
-    ui.notify(f"✅ Masking complete! Zip saved to: {zip_path}")
-    shutil.rmtree(output_folder)
-    return zip_path
-
-
-##### GRAPHING #######
-def fill_holes2(binary_image):
-    """Fill holes inside binary mask."""
-    h, w = binary_image.shape[:2]
-    mask = np.zeros((h+2, w+2), np.uint8)
-
-    # ensure strictly binary 0/255 uint8
-    _, binary_image = cv2.threshold(binary_image, 127, 255, cv2.THRESH_BINARY)
-    binary_image = binary_image.astype(np.uint8)
-
-    cv2.floodFill(binary_image, mask, (0, 0), 255)
-    mask = cv2.bitwise_not(mask)
-    return mask
-
-
-def get_largest_blobs(binary_image, num_blobs):
-    """Extract the N largest connected components from a binary mask."""
-    # --- safety: ensure grayscale, binary, and uint8 ---
-    if len(binary_image.shape) == 3:
-        binary_image = cv2.cvtColor(binary_image, cv2.COLOR_BGR2GRAY)
-    _, binary_image = cv2.threshold(binary_image, 127, 255, cv2.THRESH_BINARY)
-    binary_image = binary_image.astype(np.uint8)
-
-    # find connected components
-    num_comps, output, stats, centroids = cv2.connectedComponentsWithStats(
-        binary_image, connectivity=8
-    )
-
-    sizes = stats[1:, -1]
-    nb_components = num_comps - 1
-
-    blob_indices = np.argsort(sizes)[::-1][0:num_blobs]
-
-    aggregate_img = np.zeros((binary_image.shape[0], binary_image.shape[1], num_blobs))
-    centroid_list = centroids[blob_indices + 1]
-
-    for i in range(num_blobs):
-        img2 = np.zeros(output.shape, dtype=np.uint8)
-        img2[output == blob_indices[i] + 1] = 255
-        img2 = fill_holes2(img2) == 255
-        aggregate_img[:, :, i] = img2[:-2, :-2]  # crop floodfill padding
-
-    return aggregate_img, centroid_list
-
+    return count
 
 def pixlCount(mask_folder):
-    """Count pixels in the largest blob of each mask in a folder."""
     pixel_count_list = []
-    file_list = sorted(glob.glob(os.path.join(mask_folder, '*')))
-
+    extensions = ['*.png', '*.jpg', '*.jpeg']
+    file_list = []
+    for ext in extensions:
+        file_list.extend(glob.glob(os.path.join(mask_folder, ext)))
+    file_list = sorted(list(set(file_list)))
     for file in file_list:
-        # --- load mask in grayscale (1 channel) ---
         binary_image = cv2.imread(file, cv2.IMREAD_GRAYSCALE)
-
-        # --- force binary 0/255 ---
+        if binary_image is None: continue
         _, binary_image = cv2.threshold(binary_image, 127, 255, cv2.THRESH_BINARY)
-        binary_image = binary_image.astype(np.uint8)
-
-        aggregate_img, cen = get_largest_blobs(binary_image, 1)
-        per_blob_counts = np.count_nonzero(aggregate_img[:, :, 0])
-        pixel_count_list.append(per_blob_counts)
-
-    return pixel_count_list
-
-
-def graph(mask_folder, pixels, output_path):
-    """Plot growth curve from pixel counts and save as PNG."""
-    file_list = sorted(glob.glob(os.path.join(mask_folder, '*')))
-    file1 = Path(file_list[0]).stem
-    lastfile = Path(file_list[-1]).stem
-
-    days = [f'Day {i+1}' for i in range(len(pixels))]
-    plt.figure(figsize=(10, 5))
-    plt.plot(days, pixels, marker='o')
-    plt.xlabel(f"{file1.split('_mask')[0]} - {lastfile.split('_mask')[0]}")
-    plt.ylabel("Plant Pixel Count")
-    plt.title("Plant Area")
-    plt.grid(True)
-    plt.tight_layout()
-
-    output_path = Path(output_path)
-    plt.savefig(output_path)
-    plt.close()
-
+        count = cv2.countNonZero(binary_image)
+        pixel_count_list.append(count)
+    return pixel_count_list, file_list
 
 def run_graph(input_folder, output_zip_base):
-    """Run pixel counting + graphing, zip results, and return path."""
     output_folder = tempfile.mkdtemp(prefix="graphs_")
     os.makedirs(output_folder, exist_ok=True)
-
-    pixels = pixlCount(input_folder)
-    output_image_path = os.path.join(output_folder, "growth_plot.png")
-    graph(input_folder, pixels, output_image_path)
-
-    zip_path = os.path.join(output_zip_base, "graphs.zip")
-    with zipfile.ZipFile(zip_path, "w") as zipf:
-        for fname in os.listdir(output_folder):
-            fpath = os.path.join(output_folder, fname)
-            zipf.write(fpath, arcname=fname)
-
-    ui.notify(f"✅ Graphing complete! Zip saved to: {zip_path}")
+    pixels, file_names = pixlCount(input_folder)
+    if pixels:
+        plt.figure(figsize=(10, 5))
+        plt.plot(range(len(pixels)), pixels, marker='o')
+        plt.title("Growth Trend"); plt.grid(True); plt.tight_layout()
+        plt.savefig(os.path.join(output_folder, "growth_plot.png")); plt.close()
+        csv_path = os.path.join(output_folder, "growth_data.csv")
+        df = pd.DataFrame({'Filename': [os.path.basename(f) for f in file_names], 'Pixel_Count': pixels})
+        df.to_csv(csv_path, index=False)
+    zip_file = os.path.join(output_zip_base, "graphs.zip")
+    result = zip_output_folder(Path(output_folder), Path(zip_file))
     shutil.rmtree(output_folder)
-    return zip_path
+    return result
