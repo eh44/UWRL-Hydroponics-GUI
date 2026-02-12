@@ -204,8 +204,8 @@ async def save_uploaded_file(event):
         
         # --- CLEAR THE LIST WHEN BATCH IS DONE ---
         # If no more files are pending, reset the visual component
-        if pending_count == 0:
-            event.sender.reset()
+        #if pending_count == 0:
+         #   event.sender.reset()
 def handle_rejection(event):
     reason = event.reason if hasattr(event, 'reason') else "Max files reached"
     safe_notify(f"⚠️ File(s) rejected! {reason}", type='negative')
@@ -505,7 +505,7 @@ def main_page():
 
         with ui.card().classes('w-full max-w-4xl p-6 items-center'):
             ui.label('Step 1: Upload Data').classes('text-xl font-bold text-gray-700')
-            ui.upload(
+            upload_element = ui.upload(
                 
                 on_upload=save_uploaded_file, 
 
@@ -515,39 +515,64 @@ def main_page():
                 max_file_size=70_000_000, 
                 max_files=20,
                 label="Drop images here (Max 20 files, Max 70MB per file)"
-            ).props('color=primary flat bordered').classes('w-full max-w-lg').add_slot('list', '<div />')
+            ).props('color=primary flat bordered').classes('w-full max-w-lg')
+            upload_element.add_slot('list', '<div />')
+            upload_element.on('finish', lambda: upload_element.reset())
             file_list_container = ui.column().classes('w-full items-center mt-4')
             update_file_list_display()
-# Locate this section inside main_page():
-        with ui.grid(columns=2).classes('w-full max-w-4xl gap-6'):
-            # --- CROP CARD (Keep as is) ---
-            with ui.card().classes('p-6 items-center hover:shadow-lg transition-shadow'):
-                ui.icon('crop', size='3em', color='primary')
-                ui.label('Crop Images').classes('text-lg font-bold mt-2')
-                with ui.row().classes('mt-2'):
-                    ui.button('Setup Cropping', on_click=lambda: show_first_image(), icon='edit').props('color=secondary')
-                    ui.button('Reset Points', on_click=reset_points, icon='refresh').props('flat color=grey')
+        # --- ACTION CARDS (Steps 2, 3, 4) ---
+        # Container matches Upload Card width (max-w-4xl)
+        with ui.row().classes('w-full max-w-4xl justify-center gap-6 items-stretch'):
+            
+            # --- CARD STYLE HELPER ---
+            def card_style():
+                # w-full on mobile
+                # md:w-[calc(50%-0.75rem)] on desktop (Half width minus half the gap)
+                return 'w-full md:w-[calc(50%-0.75rem)] p-6 flex flex-col items-center hover:shadow-xl transition-all duration-300 border-t-4 border-primary bg-white rounded-lg hover:-translate-y-1'
 
-            # --- MODIFIED TIMELAPSE CARD WITH SLIDER ---
-            with ui.card().classes('p-6 items-center hover:shadow-lg transition-shadow'):
-                ui.icon('movie', size='3em', color='primary')
-                ui.label('Timelapse').classes('text-lg font-bold mt-2')
+            # --- 1. CROP CARD ---
+            with ui.card().classes(card_style()):
+                # Top Content
+                # Icon color matches Timelapse button (primary)
+                ui.icon('crop', size='3.5em').classes('text-primary mb-2') 
+                ui.label('Step 2: Crop').classes('text-xl font-bold text-gray-800')
+                ui.label('Define the grow tray area').classes('text-sm text-gray-500 mb-4 text-center')
                 
-                # Add Slider
-                with ui.row().classes('w-full items-center px-4'):
-                    ui.label('FPS:').classes('mr-2 font-bold text-gray-500')
-                    # Slider from 1 to 30 fps, defaulting to 10
-                    fps_slider = ui.slider(min=.5, max=20, value=10, step=.5).props('label-always color=primary').classes('flex-grow')
+                # Bottom Buttons
+                with ui.row().classes('w-full justify-center gap-2 mt-auto'):
+                    # Setup Button -> Primary Color
+                    ui.button('Setup', on_click=lambda: show_first_image(), icon='edit').props('color=primary').classes('flex-grow')
+                    # Reset Button -> Flat Primary (to match color scheme but imply secondary action)
+                    ui.button(on_click=reset_points, icon='refresh').props('flat color=primary round').tooltip('Reset Points')
+
+            # --- 2. TIMELAPSE CARD ---
+            with ui.card().classes(card_style()):
+                # Top Content
+                ui.icon('movie_creation', size='3.5em').classes('text-primary mb-2')
+                ui.label('Step 3: Timelapse').classes('text-xl font-bold text-gray-800')
+                ui.label('Compile images into video').classes('text-sm text-gray-500 mb-2 text-center')
                 
-                # Pass slider value to function
-                ui.button('Create Video', on_click=lambda: process_timelapse(fps_slider.value)).props('color=secondary class=mt-2')
+                # Bottom Buttons
+                with ui.column().classes('w-full mt-auto'):
+                    with ui.column().classes('w-full items-center bg-gray-50 p-3 rounded-md mb-2'):
+                        ui.label('Playback Speed (FPS)').classes('text-xs font-bold text-gray-400 uppercase tracking-wider')
+                        fps_slider = ui.slider(min=1, max=30, value=10, step=1).props('label-always color=primary').classes('w-full')
+                    
+                    # Create Video Button -> Primary Color
+                    ui.button('Create Video', on_click=lambda: process_timelapse(fps_slider.value), icon='play_circle').props('color=primary').classes('w-full')
 
-            # --- GROWTH ANALYSIS CARD ---
-            with ui.card().classes('p-6 items-center hover:shadow-lg transition-shadow'):
-                ui.icon('ssid_chart', size='3em', color='primary')
-                ui.label('Growth Analysis').classes('text-lg font-bold mt-2')
-                ui.button('Run Analysis', on_click=process_growth).props('color=secondary class=mt-2')
-
+            # --- 3. GROWTH CARD ---
+            with ui.card().classes(card_style()):
+                # Top Content
+                ui.icon('ssid_chart', size='3.5em').classes('text-primary mb-2')
+                ui.label('Step 4: Analyze').classes('text-xl font-bold text-gray-800')
+                ui.label('Calculate vegetation coverage').classes('text-sm text-gray-500 mb-4 text-center')
+                
+                # Bottom Buttons
+                with ui.column().classes('w-full mt-auto'):
+                    ui.separator().classes('w-12 bg-gray-200 mb-4 self-center')
+                    # Run Analysis Button -> Primary Color
+                    ui.button('Run Analysis', on_click=process_growth, icon='assessment').props('color=primary').classes('w-full')
         image_container = ui.column().classes('w-full max-w-4xl items-center mt-8 bg-white p-4 rounded-lg shadow-lg')
 
 # --- ENTRY POINT ---

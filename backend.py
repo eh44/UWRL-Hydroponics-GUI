@@ -234,15 +234,53 @@ def pixlCount(mask_folder):
 def run_graph(input_folder, output_zip_base):
     output_folder = tempfile.mkdtemp(prefix="graphs_")
     os.makedirs(output_folder, exist_ok=True)
+    
+    # 1. Get raw counts and filenames
     pixels, file_names = pixlCount(input_folder)
-    if pixels:
-        plt.figure(figsize=(10, 5))
-        plt.plot(range(len(pixels)), pixels, marker='o')
-        plt.title("Growth Trend"); plt.grid(True); plt.tight_layout()
-        plt.savefig(os.path.join(output_folder, "growth_plot.png")); plt.close()
+    
+    if pixels and file_names:
+        # 2. Get Total Image Area to calculate percentage
+        # (We read the first mask to get dimensions, assuming all images are the same size)
+        first_mask = cv2.imread(file_names[0], cv2.IMREAD_GRAYSCALE)
+        if first_mask is not None:
+            h, w = first_mask.shape
+            total_area = h * w
+        else:
+            total_area = 1 # Fallback to prevent division by zero
+            
+        # 3. Convert Raw Pixel Counts to Percentages
+        percentages = [(p / total_area) * 100 for p in pixels]
+        
+        # 4. Zip and Sort by Percentage (Low -> High)
+        combined_data = list(zip(percentages, file_names))
+        combined_data.sort(key=lambda x: x[0])
+        
+        # Unzip back into lists
+        sorted_percents, sorted_files = zip(*combined_data)
+        sorted_filenames = [os.path.basename(f) for f in sorted_files]
+        
+        # 5. Plot
+        plt.figure(figsize=(10, 6))
+        plt.plot(range(len(sorted_percents)), sorted_percents, marker='o', linestyle='-', color='green')
+        
+        # 6. Add Axes Labels & Title (4th Grader Friendly)
+        plt.title("How Much of the Picture is Plant?", fontsize=16)
+        plt.xlabel("Plant Images", fontsize=12)
+        plt.ylabel("Percentage of Plant Matter in Image (%)", fontsize=12)
+        plt.grid(True, linestyle='--', alpha=0.6)
+        plt.tight_layout()
+        
+        plt.savefig(os.path.join(output_folder, "growth_plot.png"))
+        plt.close()
+        
+        # 7. Save CSV with sorted data
         csv_path = os.path.join(output_folder, "growth_data.csv")
-        df = pd.DataFrame({'Filename': [os.path.basename(f) for f in file_names], 'Pixel_Count': pixels})
+        df = pd.DataFrame({
+            'Filename': sorted_filenames, 
+            'Coverage_Percent': sorted_percents
+        })
         df.to_csv(csv_path, index=False)
+        
     zip_file = os.path.join(output_zip_base, "graphs.zip")
     result = zip_output_folder(Path(output_folder), Path(zip_file))
     shutil.rmtree(output_folder)
