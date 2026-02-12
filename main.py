@@ -34,7 +34,20 @@ clicks = []
 ii = None 
 file_list_container = None 
 image_container = None     
+# --- TRACKER VARIABLES ---
+limit_popup_shown = False
+pending_size = 0  # Bytes currently being processed
+pending_count = 0 # Files currently being processed
 
+# --- HELPER: Get Total Size (Saved + Pending) ---
+def get_total_system_usage():
+    saved_size = 0
+    for path_str in uploaded_file_paths:
+        try:
+            if os.path.exists(path_str):
+                saved_size += os.path.getsize(path_str)
+        except Exception: pass
+    return saved_size + pending_size
 # --- STYLING ---
 ui.colors(primary='#4CAF50', secondary='#8BC34A', accent='#FF9800')
 
@@ -110,45 +123,53 @@ def get_file_info(event):
     return file_name, content_obj
 
 async def save_uploaded_file(event):
-    global limit_popup_shown
+    global limit_popup_shown, pending_size, pending_count
     
-    # Reset warning flag if user cleared the list
-    if not uploaded_file_paths:
+    # Reset flags if this is a fresh batch (list is empty and nothing pending)
+    if not uploaded_file_paths and pending_count == 0:
         limit_popup_shown = False
 
+    # --- 1. IMMEDIATE COUNT CHECK ---
+    # Check (Existing + Pending + This one)
+    if (len(uploaded_file_paths) + pending_count + 1) > 20:
+        if not limit_popup_shown:
+            safe_notify("⚠️ Limit Reached: Max 20 files allowed.", type='warning', closeBtn='OK', timeout=0)
+            limit_popup_shown = True
+        return 
+
+    # --- PREPARE FILE INFO ---
+    file_name, content_obj = get_file_info(event)
+    if content_obj is None:
+        if hasattr(event, 'read'): content_obj = event
+        else: return 
+
+    # --- 2. IMMEDIATE SIZE CHECK ---
+    # Measure size quickly before processing
     try:
-        # --- CONSTRAINT 1: Max 20 Files ---
-        if len(uploaded_file_paths) >= 20:
-            if not limit_popup_shown:
-                safe_notify("⚠️ Limit Reached: Keeping first 20 files only.", type='warning', closeBtn='OK', timeout=0)
-                limit_popup_shown = True
-            return # Ignore this file, keep existing ones
-
-        file_name, content_obj = get_file_info(event)
-        if content_obj is None:
-            if hasattr(event, 'read'): content_obj = event
-            else: raise ValueError(f"Could not find file content.")
-
-        # --- CONSTRAINT 2: Max 70MB Total ---
-        # Get size of incoming file
         if hasattr(content_obj, 'seek') and hasattr(content_obj, 'tell'):
             content_obj.seek(0, os.SEEK_END)
             new_file_size = content_obj.tell()
             content_obj.seek(0)
         else:
             new_file_size = 0 
+    except Exception:
+        new_file_size = 0
 
-        MAX_TOTAL_SIZE = 70_000_000 # 70 MB
-        current_total = get_current_total_size()
-        
-        if (current_total + new_file_size) > MAX_TOTAL_SIZE:
-            if not limit_popup_shown:
-                space_left_mb = max(0, (MAX_TOTAL_SIZE - current_total) / (1024*1024))
-                safe_notify(f"⚠️ Storage Full: Keeping files up to 70MB limit. ({space_left_mb:.1f} MB left)", type='warning', closeBtn='OK', timeout=0)
-                limit_popup_shown = True
-            return # Ignore this file, keep existing ones
+    MAX_TOTAL_SIZE = 70_000_000 # 70 MB
+    
+    # Check against total usage including pending files
+    if (get_total_system_usage() + new_file_size) > MAX_TOTAL_SIZE:
+        if not limit_popup_shown:
+            space_left_mb = max(0, (MAX_TOTAL_SIZE - get_total_system_usage()) / (1024*1024))
+            safe_notify(f"⚠️ Storage Full: Capacity reached ({space_left_mb:.1f} MB left).", type='warning', closeBtn='OK', timeout=0)
+            limit_popup_shown = True
+        return 
 
-        # --- SAVE THE FILE ---
+    # --- RESERVE SPACE ---
+    pending_count += 1
+    pending_size += new_file_size
+    
+    try:
         path = UPLOAD_DIR / file_name
         
         if hasattr(content_obj, 'seek'):
@@ -166,17 +187,25 @@ async def save_uploaded_file(event):
         path_str = str(path)
         if path_str not in original_file_paths:
             original_file_paths.append(path_str)
-        
         if path_str not in uploaded_file_paths:
             uploaded_file_paths.append(path_str)
         if path_str not in latest_color_paths:
             latest_color_paths.append(path_str)
             
-        #safe_notify(f'🌱 Uploaded: {file_name}')
         update_file_list_display()
         
     except Exception as e:
         safe_notify(f"Upload Error: {e}", type='negative')
+        
+    finally:
+        # --- RELEASE RESERVATION ---
+        pending_count -= 1
+        pending_size -= new_file_size
+        
+        # --- CLEAR THE LIST WHEN BATCH IS DONE ---
+        # If no more files are pending, reset the visual component
+        if pending_count == 0:
+            event.sender.reset()
 def handle_rejection(event):
     reason = event.reason if hasattr(event, 'reason') else "Max files reached"
     safe_notify(f"⚠️ File(s) rejected! {reason}", type='negative')
@@ -443,7 +472,9 @@ async def process_growth():
 # --- MAIN PAGE LAYOUT ---
 def main_page():
     global file_list_container, image_container
-    
+    # --- CSS: Hide the built-in file list (thumbnails & checkmarks) ---
+    # --- CSS: Aggressively hide the internal file list and checkmarks ---
+   
     with ui.header().classes('bg-primary text-white shadow-lg'):
         ui.icon('eco', size='2em').classes('q-mr-sm')
         ui.label('Hydroponic System Analysis').classes('text-2xl font-bold')
@@ -475,14 +506,16 @@ def main_page():
         with ui.card().classes('w-full max-w-4xl p-6 items-center'):
             ui.label('Step 1: Upload Data').classes('text-xl font-bold text-gray-700')
             ui.upload(
+                
                 on_upload=save_uploaded_file, 
+
                 on_rejected=handle_rejection,
                 multiple=True, 
                 auto_upload=True, 
                 max_file_size=70_000_000, 
                 max_files=20,
                 label="Drop images here (Max 20 files, Max 70MB per file)"
-            ).props('color=primary flat bordered').classes('w-full max-w-lg')
+            ).props('color=primary flat bordered').classes('w-full max-w-lg').add_slot('list', '<div />')
             file_list_container = ui.column().classes('w-full items-center mt-4')
             update_file_list_display()
 # Locate this section inside main_page():
