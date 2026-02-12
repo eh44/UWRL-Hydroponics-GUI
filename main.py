@@ -39,6 +39,38 @@ image_container = None
 ui.colors(primary='#4CAF50', secondary='#8BC34A', accent='#FF9800')
 
 # --- LOGIC FUNCTIONS ---
+# --- TRACKER FOR ONE-TIME WARNING ---
+limit_popup_shown = False
+
+# --- SAFE NOTIFY (Fixes "Client has been deleted" crash) ---
+def safe_notify(message, **kwargs):
+    try:
+        ui.notify(message, **kwargs)
+    except Exception:
+        pass # Client disconnected, ignore error
+
+# --- HELPER: Calculate total size ---
+def get_current_total_size():
+    total_bytes = 0
+    for path_str in uploaded_file_paths:
+        try:
+            if os.path.exists(path_str):
+                total_bytes += os.path.getsize(path_str)
+        except Exception:
+            pass
+    return total_bytes
+def get_current_total_size():
+    total_bytes = 0
+    for path_str in uploaded_file_paths:
+        try:
+            if os.path.exists(path_str):
+                total_bytes += os.path.getsize(path_str)
+        except Exception:
+            pass
+    return total_bytes
+def copy_files_to_temp(file_paths, temp_dir):
+    for src_path in file_paths:
+        shutil.copy2(src_path, os.path.join(temp_dir, os.path.basename(src_path)))
 
 def update_file_list_display():
     if file_list_container:
@@ -78,13 +110,47 @@ def get_file_info(event):
     return file_name, content_obj
 
 async def save_uploaded_file(event):
+    global limit_popup_shown
+    
+    # Reset warning flag if user cleared the list
+    if not uploaded_file_paths:
+        limit_popup_shown = False
+
     try:
+        # --- CONSTRAINT 1: Max 20 Files ---
+        if len(uploaded_file_paths) >= 20:
+            if not limit_popup_shown:
+                safe_notify("⚠️ Limit Reached: Keeping first 20 files only.", type='warning', closeBtn='OK', timeout=0)
+                limit_popup_shown = True
+            return # Ignore this file, keep existing ones
+
         file_name, content_obj = get_file_info(event)
         if content_obj is None:
             if hasattr(event, 'read'): content_obj = event
             else: raise ValueError(f"Could not find file content.")
 
+        # --- CONSTRAINT 2: Max 70MB Total ---
+        # Get size of incoming file
+        if hasattr(content_obj, 'seek') and hasattr(content_obj, 'tell'):
+            content_obj.seek(0, os.SEEK_END)
+            new_file_size = content_obj.tell()
+            content_obj.seek(0)
+        else:
+            new_file_size = 0 
+
+        MAX_TOTAL_SIZE = 70_000_000 # 70 MB
+        current_total = get_current_total_size()
+        
+        if (current_total + new_file_size) > MAX_TOTAL_SIZE:
+            if not limit_popup_shown:
+                space_left_mb = max(0, (MAX_TOTAL_SIZE - current_total) / (1024*1024))
+                safe_notify(f"⚠️ Storage Full: Keeping files up to 70MB limit. ({space_left_mb:.1f} MB left)", type='warning', closeBtn='OK', timeout=0)
+                limit_popup_shown = True
+            return # Ignore this file, keep existing ones
+
+        # --- SAVE THE FILE ---
         path = UPLOAD_DIR / file_name
+        
         if hasattr(content_obj, 'seek'):
             try:
                 result = content_obj.seek(0)
@@ -106,24 +172,24 @@ async def save_uploaded_file(event):
         if path_str not in latest_color_paths:
             latest_color_paths.append(path_str)
             
-        ui.notify(f'🌱 Uploaded: {file_name}')
+        #safe_notify(f'🌱 Uploaded: {file_name}')
         update_file_list_display()
+        
     except Exception as e:
-        ui.notify(f"Upload Error: {e}", type='negative')
-
+        safe_notify(f"Upload Error: {e}", type='negative')
 def handle_rejection(event):
-    reason = event.reason if hasattr(event, 'reason') else "Unknown"
-    ui.notify(f"⚠️ File rejected! {reason}", type='negative')
+    reason = event.reason if hasattr(event, 'reason') else "Max files reached"
+    safe_notify(f"⚠️ File(s) rejected! {reason}", type='negative')
 
 def reset_points():
     clicks.clear()
     if ii: ii.content = '' 
-    ui.notify("🩹 Points reset. Click 4 new points.")
+    safe_notify("🩹 Points reset. Click 4 new points.")
     show_first_image()
 
 def revert_to_originals():
     if not original_file_paths:
-        ui.notify("No originals to revert to.", type='warning')
+        safe_notify("No originals to revert to.", type='warning')
         return
     
     uploaded_file_paths.clear()
@@ -133,7 +199,7 @@ def revert_to_originals():
     latest_color_paths.extend(original_file_paths)
     
     update_file_list_display()
-    ui.notify("Start over: Reverted to original images.")
+    safe_notify("Start over: Reverted to original images.")
 
 def on_image_click(e: events.MouseEventArguments):
     global ii
@@ -142,7 +208,7 @@ def on_image_click(e: events.MouseEventArguments):
         ii.content += f'<circle cx="{e.image_x}" cy="{e.image_y}" r="15" fill="none" stroke="{color}" stroke-width="4" />'
         clicks.append([e.image_x, e.image_y])
         if len(clicks) == 4:
-            ui.notify("✅ 4 points selected! Processing crop...")
+            safe_notify("✅ 4 points selected! Processing crop...")
             x_coords = [pt[0] for pt in clicks]
             y_coords = [pt[1] for pt in clicks]
             x, y = min(x_coords), min(y_coords)
@@ -161,7 +227,7 @@ def crop_ready():
     temp_input = tempfile.mkdtemp()
     
     if not original_file_paths:
-        ui.notify("No original files found to crop!", type='negative')
+        safe_notify("No original files found to crop!", type='negative')
         return
 
     files_to_crop = 0
@@ -172,7 +238,7 @@ def crop_ready():
         except Exception: pass
 
     if files_to_crop == 0:
-        ui.notify("Could not find original files on disk.", type='negative')
+        safe_notify("Could not find original files on disk.", type='negative')
         return
 
     run_cropping(temp_input, str(CROPPED_DIR), roi)
@@ -185,7 +251,7 @@ def crop_ready():
         latest_color_paths.clear()
         latest_color_paths.extend(new_active_files)
         
-        ui.notify(f"✅ Active set updated to {len(new_active_files)} cropped images.")
+        safe_notify(f"✅ Active set updated to {len(new_active_files)} cropped images.")
         update_file_list_display()
         
         zip_path = BASE_DIR / "cropped_images.zip"
@@ -194,7 +260,7 @@ def crop_ready():
                 zipf.write(fpath, arcname=os.path.basename(fpath))
         ui.download(f'/hydro_data/cropped_images.zip', filename="cropped_images.zip")
     else:
-        ui.notify("❌ Cropping produced no images. Check ROIs.", type='negative')
+        safe_notify("❌ Cropping produced no images. Check ROIs.", type='negative')
 
     shutil.rmtree(temp_input)
     clicks.clear()
@@ -203,22 +269,23 @@ def crop_ready():
 def show_first_image():
     global ii
     if not original_file_paths:
-        ui.notify("Please upload files first", type="warning")
+        safe_notify("Please upload files first", type="warning")
         return
     filename = os.path.basename(original_file_paths[0])
     image_url = f'/hydro_data/uploads/{filename}'
     image_container.clear()
     with image_container:
         ui.label("Click 4 corners of the original image to crop:").classes('text-lg font-bold text-gray-700')
-        ii = ui.interactive_image(image_url, on_mouse=on_image_click, events=['click'], cross=True)
+        ii = ui.interactive_image(image_url, on_mouse=on_image_click, events=['click'], cross=True, sanitize=False)
         ii.classes('w-full rounded-lg shadow-md border-2 border-gray-300')
     ui.timer(0.1, lambda: image_container.run_method('scrollIntoView', {'behavior': 'smooth', 'block': 'center'}), once=True)
 
-def process_timelapse():
+async def process_timelapse(fps):
+    import asyncio # Ensure asyncio is imported
     source_files = latest_color_paths if latest_color_paths else uploaded_file_paths
     
     if not source_files: 
-        ui.notify("No images available.", type='warning')
+        safe_notify("No images available.", type='warning')
         return
     
     video_size = (1280, 720) 
@@ -226,20 +293,36 @@ def process_timelapse():
         with Image.open(source_files[0]) as img:
             video_size = img.size 
     except Exception as e:
-        ui.notify(f"Warning: Could not detect image size: {e}")
+        safe_notify(f"Warning: Could not detect image size: {e}")
 
     temp_input = tempfile.mkdtemp()
     video_filename = f"timelapse_{uuid.uuid4().hex}.mp4"
     output_video_path = BASE_DIR / video_filename
 
+    # --- LOADING DIALOG ---
+    with ui.dialog() as loading_dialog, ui.card().classes('w-64 items-center'):
+        ui.label(f"Generating Video ({fps} FPS)...")
+        ui.spinner(size='lg')
+    
     try:
-        ui.notify(f"⏳ Generating segmented timelapse...")
-        for src_path in source_files:
-            shutil.copy2(src_path, os.path.join(temp_input, os.path.basename(src_path)))
+        loading_dialog.open()
+        # CRITICAL: Force UI to update before heavy work starts
+        await asyncio.sleep(0.1) 
+        
+        # 1. Offload file copying (This was causing the connection lost error)
+        await run.io_bound(copy_files_to_temp, source_files, temp_input)
 
-        if run_timelapse(temp_input, str(output_video_path), fps=1.0, size=video_size):
+        # 2. Offload video generation
+        success = await run.io_bound(run_timelapse, temp_input, str(output_video_path), fps=fps, size=video_size)
+        
+        loading_dialog.close()
+        
+        if success:
             ui.download(f'/hydro_data/{video_filename}', filename="timelapse.mp4")
-            ui.notify("🎬 Timelapse ready!")
+            safe_notify("🎬 Timelapse ready!")
+    except Exception as e:
+        loading_dialog.close()
+        safe_notify(f"Error: {e}", type='negative')
     finally:
         shutil.rmtree(temp_input, ignore_errors=True)
 
@@ -268,7 +351,7 @@ async def process_masking():
         
         if zip_path and os.path.exists(zip_path):
             ui.download(f'/hydro_data/{os.path.basename(zip_path)}', filename="masks.zip")
-            ui.notify("✅ Masks Generated!")
+            safe_notify("✅ Masks Generated!")
             
             if MASK_DIR.exists(): shutil.rmtree(MASK_DIR)
             MASK_DIR.mkdir()
@@ -281,16 +364,17 @@ async def process_masking():
                 uploaded_file_paths.clear()
                 uploaded_file_paths.extend(new_masks)
                 update_file_list_display()
-                ui.notify(f"🔄 Active set switched to {len(new_masks)} masks.", type='positive')
+                safe_notify(f"🔄 Active set switched to {len(new_masks)} masks.", type='positive')
         else:
-            ui.notify("❌ Masking failed (No output).", type='negative')
+            safe_notify("❌ Masking failed (No output).", type='negative')
     except Exception as e:
-        ui.notify(f"Error: {e}", type='negative')
+        safe_notify(f"Error: {e}", type='negative')
     finally:
         shutil.rmtree(temp_input, ignore_errors=True)
         p_dialog.close()
 
 async def process_growth():
+    import asyncio # Ensure asyncio is imported
     if not uploaded_file_paths: return
     
     first_file = str(uploaded_file_paths[0])
@@ -298,43 +382,61 @@ async def process_growth():
     
     temp_mask_dir = tempfile.mkdtemp()
     
+    # --- LOADING DIALOG ---
+    with ui.dialog() as loading_dialog, ui.card().classes('w-64 items-center'):
+        status_label = ui.label("Preparing Data...")
+        ui.spinner(size='lg')
+
+    loading_dialog.open()
+    await asyncio.sleep(0.1) # CRITICAL: Force UI update
+    
     try:
         if is_mask_set:
-            for file_path in uploaded_file_paths:
-                shutil.copy2(file_path, os.path.join(temp_mask_dir, os.path.basename(file_path)))
+            status_label.set_text("Copying Masks...")
+            # Offload copying
+            await run.io_bound(copy_files_to_temp, uploaded_file_paths, temp_mask_dir)
         else:
-            ui.notify("⚠️ Generating temporary masks for analysis...", type='warning')
+            status_label.set_text("Auto-Masking Images...")
             temp_input_images = tempfile.mkdtemp()
-            for file_path in uploaded_file_paths:
-                shutil.copy2(file_path, os.path.join(temp_input_images, os.path.basename(file_path)))
             
-            with ui.dialog() as p_dialog, ui.card().classes('w-64 items-center'):
-                ui.label("Auto-Masking...")
-                progress_bar = ui.linear_progress(value=0).props('instant-feedback')
-                p_dialog.open()
-                def update_prog(ratio): progress_bar.value = ratio
-                zip_path = await run.io_bound(run_mask, temp_input_images, str(temp_mask_dir), update_prog)
-                p_dialog.close()
-                shutil.rmtree(temp_input_images)
+            # Offload copying source images
+            await run.io_bound(copy_files_to_temp, uploaded_file_paths, temp_input_images)
+            
+            # Run masking (this is already offloaded in your original code, which is good)
+            def update_prog(ratio): 
+                # Optional: You could update a progress bar here if you added one to the dialog
+                pass
                 
-                if zip_path and os.path.exists(zip_path):
-                    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                        zip_ref.extractall(temp_mask_dir)
-                else:
-                    ui.notify("❌ Auto-Masking failed.", type='negative')
-                    return
+            zip_path = await run.io_bound(run_mask, temp_input_images, str(temp_mask_dir), update_prog)
+            shutil.rmtree(temp_input_images)
+            
+            if not (zip_path and os.path.exists(zip_path)):
+                 loading_dialog.close()
+                 safe_notify("❌ Auto-Masking failed.", type='negative')
+                 return
+                 
+            # Unzip (fast enough to do here, or offload if very large)
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_mask_dir)
 
-        ui.notify("⏳ Running Growth Analysis...")
+        status_label.set_text("Analyzing Growth...")
+        # Force update again before the next heavy step
+        await asyncio.sleep(0.1) 
+        
+        # Run Graph Analysis
         zip_path = await run.io_bound(run_graph, temp_mask_dir, str(BASE_DIR))
         
+        loading_dialog.close()
+
         if zip_path and os.path.exists(zip_path):
             ui.download(f'/hydro_data/{os.path.basename(zip_path)}', filename="graphs.zip")
-            ui.notify("✅ Graphs ready!")
+            safe_notify("✅ Graphs ready!")
         else:
-            ui.notify("❌ Growth Analysis failed (No Data).", type='negative')
+            safe_notify("❌ Growth Analysis failed (No Data).", type='negative')
             
     except Exception as e:
-        ui.notify(f"Critical Error: {e}", type='negative')
+        loading_dialog.close()
+        safe_notify(f"Critical Error: {e}", type='negative')
     finally:
         shutil.rmtree(temp_mask_dir, ignore_errors=True)
 
@@ -349,12 +451,26 @@ def main_page():
     with ui.column().classes('w-full items-center gap-6 p-6 bg-gray-50 min-h-screen'):
         
         with ui.expansion('Instructions & Guide', icon='help', value=True).classes('w-full max-w-4xl bg-white rounded-lg shadow-sm'):
-            with ui.list():
-                ui.item('1. Upload: Drop images (Max 70MB).')
-                ui.item('2. Choose: Select which pictures are wanted by selecting the check mark on each image or select all by clicking the multi-check mark at the top.')
-                ui.item('3. Crop: Pick 4 points on the image and downloads them as a zip file. Active images become cropped versions.')
-                ui.item('4. Mask: Converts active images to B&W masks and downloads them as a zip file.')
-                ui.item('5. Growth: Analyzes the current active masks and downloads a zip file of a plot and csv file.')
+            with ui.list().props('dense'):
+                with ui.item():
+                    with ui.item_section():
+                        ui.markdown('**1. Upload:** Drag & drop images or click the plus button to browse for files. (Max 20 files, 70MB per file).')
+                
+                with ui.item():
+                    with ui.item_section():
+                        ui.markdown('**2. Crop (optional):** Click **Setup Cropping**. Then click the 4 corners of the grow tray on the image. Cropped images will be downloaded as a zip file and set as active for the next steps.')
+                
+                with ui.item():
+                    with ui.item_section():
+                        ui.markdown('**3. Review:** The "Active Images" list below shows exactly what will be processed.')
+                
+                with ui.item():
+                    with ui.item_section():
+                        ui.markdown('**4. Timelapse:** Set the desired speed by using the slider to pick how many frames per second (FPS) and click **Create Video**.')
+                
+                with ui.item():
+                    with ui.item_section():
+                        ui.markdown('**5. Growth:** Click **Run Analysis** to generate a graph and CSV report of plant coverage.')
 
         with ui.card().classes('w-full max-w-4xl p-6 items-center'):
             ui.label('Step 1: Upload Data').classes('text-xl font-bold text-gray-700')
@@ -364,13 +480,14 @@ def main_page():
                 multiple=True, 
                 auto_upload=True, 
                 max_file_size=70_000_000, 
-                label="Drop images here (Max 70MB)"
+                max_files=20,
+                label="Drop images here (Max 20 files, Max 70MB per file)"
             ).props('color=primary flat bordered').classes('w-full max-w-lg')
             file_list_container = ui.column().classes('w-full items-center mt-4')
             update_file_list_display()
-
+# Locate this section inside main_page():
         with ui.grid(columns=2).classes('w-full max-w-4xl gap-6'):
-            # --- FIX: REMOVED GREEN BORDER FROM CROP CARD ---
+            # --- CROP CARD (Keep as is) ---
             with ui.card().classes('p-6 items-center hover:shadow-lg transition-shadow'):
                 ui.icon('crop', size='3em', color='primary')
                 ui.label('Crop Images').classes('text-lg font-bold mt-2')
@@ -378,15 +495,25 @@ def main_page():
                     ui.button('Setup Cropping', on_click=lambda: show_first_image(), icon='edit').props('color=secondary')
                     ui.button('Reset Points', on_click=reset_points, icon='refresh').props('flat color=grey')
 
-            for icon, label, func, btn_text in [
-                ('movie', 'Timelapse', process_timelapse, 'Create Video'),
-                ('contrast', 'Generate Masks', process_masking, 'Make Masks'),
-                ('ssid_chart', 'Growth Analysis', process_growth, 'Run Analysis')
-            ]:
-                with ui.card().classes('p-6 items-center hover:shadow-lg transition-shadow'):
-                    ui.icon(icon, size='3em', color='primary')
-                    ui.label(label).classes('text-lg font-bold mt-2')
-                    ui.button(btn_text, on_click=func).props('color=secondary class=mt-2')
+            # --- MODIFIED TIMELAPSE CARD WITH SLIDER ---
+            with ui.card().classes('p-6 items-center hover:shadow-lg transition-shadow'):
+                ui.icon('movie', size='3em', color='primary')
+                ui.label('Timelapse').classes('text-lg font-bold mt-2')
+                
+                # Add Slider
+                with ui.row().classes('w-full items-center px-4'):
+                    ui.label('FPS:').classes('mr-2 font-bold text-gray-500')
+                    # Slider from 1 to 30 fps, defaulting to 10
+                    fps_slider = ui.slider(min=.5, max=20, value=10, step=.5).props('label-always color=primary').classes('flex-grow')
+                
+                # Pass slider value to function
+                ui.button('Create Video', on_click=lambda: process_timelapse(fps_slider.value)).props('color=secondary class=mt-2')
+
+            # --- GROWTH ANALYSIS CARD ---
+            with ui.card().classes('p-6 items-center hover:shadow-lg transition-shadow'):
+                ui.icon('ssid_chart', size='3em', color='primary')
+                ui.label('Growth Analysis').classes('text-lg font-bold mt-2')
+                ui.button('Run Analysis', on_click=process_growth).props('color=secondary class=mt-2')
 
         image_container = ui.column().classes('w-full max-w-4xl items-center mt-8 bg-white p-4 rounded-lg shadow-lg')
 

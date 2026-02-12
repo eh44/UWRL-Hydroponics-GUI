@@ -14,6 +14,7 @@ import zipfile
 import tempfile
 import shutil
 
+
 def zip_output_folder(folder: Path, zip_path: Path):
     with zipfile.ZipFile(zip_path, 'w') as zipf:
         for file in folder.rglob('*'):
@@ -160,7 +161,7 @@ def run_mask(input_folder, output_zip_path, progress_callback=None):
     zip_file = os.path.join(output_zip_path, "masks.zip")
     return zip_output_folder(Path(output_folder), Path(zip_file))
 
-def run_timelapse(folder, output_path, fps=2.0, size=None):
+def run_timelapse(folder, output_path, fps, size=None):
     image_files = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
     if not image_files: return False
     frames = []
