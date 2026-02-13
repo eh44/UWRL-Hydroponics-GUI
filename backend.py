@@ -265,7 +265,7 @@ def run_graph(input_folder, output_zip_base):
         
         # 6. Add Axes Labels & Title (4th Grader Friendly)
         plt.title("How Much of the Picture is Plant?", fontsize=16)
-        plt.xlabel("Plant Images", fontsize=12)
+        plt.xlabel("Plant Image Number", fontsize=12)
         plt.ylabel("Percentage of Plant Matter in Image (%)", fontsize=12)
         plt.grid(True, linestyle='--', alpha=0.6)
         plt.tight_layout()
