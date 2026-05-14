@@ -1,0 +1,12 @@
+v4l2-ctl --set-ctrl=brightness=132 \
+    --set-ctrl=contrast=38 \
+    --set-ctrl=saturation=54 \
+    --set-ctrl=hue=128 \
+    --set-ctrl=white_balance_temperature_auto=0 \
+    --set-ctrl=gamma=120 \
+    --set-ctrl=gain=0 \
+    --set-ctrl=power_line_frequency=1 \
+    --set-ctrl=white_balance_temperature=4600 \
+    --set-ctrl=sharpness=38 \
+    --set-ctrl=backlight_compensation=4 \
+    --set-ctrl=exposure=30
