@@ -1,117 +1,108 @@
 # Hydroponic System Image App (NiceGUI + Render deployment version)
+This desktop app allows you to crop, timelapse, and mask plant images using NiceGUI and OpenCV.
 
-This desktop app allows you to crop, create a timelapse, and mask plant images using NiceGUI and OpenCV.
+To run this app correctly, the best way to do so is first uploads a set of images to crop. About 12 images is good. Once those images are uploaded, and you press the button to crop, the first image will appear at the top of the page. Click four points to crop the image to ONE PLANT, and all uploaded images (again, of one plant) will be downloaded to the browser. Save images to your computer and open zip file.
 
-## App Usage Instructions
+Then, reload the app to work use the other buttons.
 
-To run this app correctly, the best way to do so is first upload a set of images to crop. About 12 images is a good starting point. 
+Timelapse: Upload the cropped images and click the timelapse button. You will get a cool timelapse video of your plant growing saved to your desktop.
 
-1. **Cropping:** Once your images are uploaded, press the button to crop. The first image will appear at the top of the page. Click four points to crop the image to **ONE PLANT**, and all uploaded images (again, of one plant) will be downloaded to the browser as a zip file. Save the images to your computer and unzip the file. Then, reload the app to use the other features.
+Masking/growth charts: Make sure the cropped images are the uploaded images (reload page if necessary). In order to use the growth chart button, you must first make the masks of the images (which are just a black and white version of the plant). Then masks will be downloaded to the browser, save to computer and unzip. Reload the page, and upload the masks. Then you can click the growth code! A zip file with a growth graph will be downloaded to the browser. Save to desktop, unzip, and the graph will appear on the desktop!
 
-2. **Timelapse:** Upload the newly cropped images and click the timelapse button. You will get a cool timelapse video of your plant growing saved to your desktop.
+Requirements for set up
+Supplies needed
+A computer to set up the Raspberry Pi imager
+One Raspberry 4
+A USB camera with preferably a fish eye lense
+3d printer
+4 zip ties
+4 screws (name the size)
 
-3. **Masking & Growth Charts:** Make sure the cropped images are the uploaded images (reload the page if necessary). 
-   * **Masking:** In order to use the growth chart button, you must first make the masks of the images (which are just a black and white version of the plant). Click the button to generate masks, download them to your browser, save them to your computer, and unzip. 
-   * **Growth Charts:** Reload the page, and upload the newly generated masks. Then you can click the growth code! A zip file containing a growth graph will be downloaded to your browser. Save to your desktop, unzip, and the graph will appear on your desktop.
-
----
-
-## Requirements for Setup
-
-### Supplies Needed
-* One Raspberry Pi 4 *(details on what Raspberry Pi to be supplied later)*
-* USB Camera *(ask Dr. Young potentially?)*
-* 3D printer
-* 4 zip ties
-* 4 screws *(name the size)*
-
----
-
-## Raspberry Pi & Software Setup
-
-If you are running this locally on a PC (Linux or WSL), clone this repository by running the following command in a terminal:
+Clone this repository by running the following command in a terminal, preferably in linux or WSL
 ```bash
 git clone [https://github.com/thedaisylab/UWRL-Hydroponics-GUI.git](https://github.com/thedaisylab/UWRL-Hydroponics-GUI.git)
 
 ```
 
-### 1. Initial Device Setup
-
-Set up the Raspberry Pi with the Raspberry Pi OS desktop version as explained in the [official documentation here](https://www.raspberrypi.com/documentation/computers/getting-started.html).
-
-Once set up, clone this GitHub repository onto the Raspberry Pi device:
+Set up the raspberry pi with the desktop version as explained here: https://www.raspberrypi.com/software/
+Once set up, clone this GitHub on the device by using git clone link here:
 
 ```bash
 git clone [https://github.com/thedaisylab/UWRL-Hydroponics-GUI.git](https://github.com/thedaisylab/UWRL-Hydroponics-GUI.git)
 
 ```
 
-### 2. Installing Dependencies
+### Setting up Google Cloud and the Service Account
 
-This project requires specific libraries to control the webcam, manipulate images, and upload them to Google Drive.
+Before automating the Raspberry Pi, you need a place in the cloud to store the images and a "Service Account". A Google Service Account is intended to represent a non-human user. In this system, it acts as the "identity" for your Raspberry Pi. It uses a downloaded key (a JSON file) to securely authenticate in the background, allowing your Pi to deposit images directly into your Google Cloud Storage Bucket without requiring a human to log in.
 
-First, install the system packages and virtual environment tools:
+**1. Create a Project and Storage Bucket:**
 
-```bash
-sudo apt update
-sudo apt install python3 python3-venv python3-pip fswebcam -y
+1. Go to the [Google Cloud Console](https://console.cloud.google.com/) and log in.
+2. Click the project drop-down menu near the top-left and select **New Project**. Name it and click **Create**. Ensure this new project is selected.
+3. In the search bar at the top, type **Buckets** and click on the Cloud Storage Buckets page.
+4. Click **Create**.
+5. Give your bucket a globally unique name. **Write this name down; you will need it later.**
+6. Choose a Region (e.g., `us-west1`), leave the storage class as **Standard**, and click **Create**.
+
+**2. Create the Service Account:**
+
+1. In the top search bar, type **Service Accounts** and navigate to that page.
+2. Click **Create Service Account**.
+3. Name it (e.g., `pi-bucket-uploader`) and click **Create and Continue**.
+4. Under "Select a role", search for **Storage Object Admin** (this gives it permission to put files in the bucket). Select it, and click **Done**.
+
+**3. Generate and Download the Key:**
+
+1. Click on the email address of the Service Account you just created.
+2. Go to the **Keys** tab.
+3. Click **Add Key** > **Create new key**.
+4. Select **JSON** and click **Create**.
+5. A `.json` file will download to your computer. Keep this highly secure. Transfer this file to your Raspberry Pi, place it in the `Raspberry Pi code/` folder, and rename it to `credentials.json`.
+
+*(Important: Add `credentials.json` to your `.gitignore` file so you do not accidentally publish your private database keys to GitHub).*
+
+Update your Python script (`serviceToDrive.py`) to point to the absolute path of this file:
+
+```python
+import os
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/home/YOUR_PI_USERNAME/UWRL-Hydroponics-GUI/Raspberry Pi code/credentials.json"
 
 ```
+### Testing and Adjusting Camera Parameters
+Depending on the lighting in your specific environment, the default camera settings might result in images that are too dark or too washed out. You can visually test and change your camera parameters using a tool called qv4l2.
 
-Next, create a virtual environment (we will name it `envi`) and activate it:
-
-```bash
-python3 -m venv envi
-source envi/bin/activate
+Open your Raspberry Pi terminal and install the tool by running:
 
 ```
-
-With the virtual environment activated, install the required Python libraries:
-
-```bash
-pip install google-auth google-auth-oauthlib google-api-python-client opencv-python numpy
-
+sudo apt install qv4l2 -y
 ```
+Open the application by typing qv4l2 into the terminal and pressing Enter.
 
-*(Note: You will also need a Google Service Account JSON file saved on the Pi to authenticate with Google Drive).*
+A graphical window will open showing a live feed of your camera. Use the sliders to adjust settings like brightness, contrast, and exposure until the picture looks ideal for your setup.
 
----
+Take note of the exact numerical values you changed. You will then need to open your webcam.sh script and update the fswebcam command parameters to include those specific changes so the automated camera uses them every time it takes a photo.
+### Automating the Camera
 
-## Automating the Camera and Uploads
-
-The repository includes three key files in the `Raspberry Pi code` directory to handle photo capturing and uploading:
-
-* **`webcam.sh`**: A bash script that uses `fswebcam` to take a picture and save it with a timestamp.
-* **`serviceToDrive.py`**: A Python script that undistorts the fisheye image and uploads it to a specified Google Drive folder.
-* **`serviceRun.sh`**: A bash script that automatically activates the Python virtual environment and executes `serviceToDrive.py`.
-
-*Important: Make sure to update the directory paths inside these scripts (e.g., `/home/ciroh-uwrlphoto/...`) to match the actual username and file paths on your Raspberry Pi.*
-
-### Adding to Crontab
-
-To automate the system so that it takes pictures and uploads them without manual intervention, you need to add the scripts to the Pi's cron scheduler.
-
-Open the terminal and edit your crontab:
+Add the following to cron.tab by going to the cron.tab items. Open the cron scheduler by typing this into the terminal:
 
 ```bash
 crontab -e
 
 ```
 
-Add the following lines to the bottom of the file (be sure to replace the file paths with your actual paths):
+And put the file path of the three files here (scroll to the bottom of the file and paste these, making sure to replace `YOUR_PI_USERNAME` with your actual Pi username):
 
 ```bash
-0 6,18 * * * /path/to/your/webcam.sh 2>&1
-5 18 * * *  /path/to/your/serviceRun.sh 2>&1
+@reboot /home/YOUR_PI_USERNAME/UWRL-Hydroponics-GUI/Raspberry\ Pi\ code/set_camera.sh 2>&1
+
+0 6,18 * * * /home/YOUR_PI_USERNAME/UWRL-Hydroponics-GUI/Raspberry\ Pi\ code/webcam.sh 2>&1
+
+5 18 * * * /home/YOUR_PI_USERNAME/UWRL-Hydroponics-GUI/Raspberry\ Pi\ code/serviceRun.sh 2>&1
 
 ```
 
----
-
-## Link to the Render Site
-
-**Live Application:** [https://hydroponicssysgui.onrender.com/](https://hydroponicssysgui.onrender.com/)
-
-```
+Link to the Render site
+https://hydroponicssysgui.onrender.com/
 
 ```
