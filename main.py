@@ -487,10 +487,10 @@ def main_page():
                 
                 with ui.item():
                     with ui.item_section():
-                        ui.markdown('**2. Crop Images (Optional):** Click "Setup Cropping". Then click the 4 corners of the grow tray on the image to crop the image. Cropped images will be downloaded as a zip file and will be automatically set as active for the next steps.')
+                        ui.markdown('**2. Crop Images (Optional):** Click "Setup Cropping". Then click the 4 corners of the grow tray on the image to crop the image. Cropped images will be downloaded as a zip file and will be used instead of the whole image for Timelapse and Growth Data.')
                 with ui.item():
                     with ui.item_section():
-                        ui.markdown('**3. Timelapse:** Create a timelapse video of the plant growth. Set the desired speed by using the slider to pick how many frames per second (FPS) any value between 0.5 and 20 and click "Create Video". The video will be downloaded as an MP4 file.')
+                        ui.markdown('**3. Timelapse:** Create a timelapse video of the plant growth. Set the desired speed by using the slider to pick how many frames per second (FPS), which can be any values between 0.5 and 20 and click "Create Video". The video will be downloaded as an MP4 file.')
                 
                 with ui.item():
                     with ui.item_section():
