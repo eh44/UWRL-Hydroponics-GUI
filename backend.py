@@ -23,20 +23,26 @@ def zip_output_folder(folder: Path, zip_path: Path):
 
 def generate_mask(plant_image):
     if plant_image is None: return None
-    MIN_PART_AREA = 100             
-    GIANT_PLANT_RATIO = 0.03       
-    MEDIUM_PART_RATIO = 0.005      
-    MIN_KEEP_RATIO = 0.10          
+    
+    # --- HEURISTIC THRESHOLDS (Tweak these if lab camera/lighting changes) ---
+    MIN_PART_AREA = 100             # Ignore any green specks smaller than 100 pixels
+    GIANT_PLANT_RATIO = 0.03        # A contour is considered a "large plant" if it takes up > 3% of the image
+    MEDIUM_PART_RATIO = 0.005       # A contour is "medium" if it takes up > 0.5% of the image
+    MIN_KEEP_RATIO = 0.10           # Require at least 10% of a contour to pass color checks to keep it
 
+    # Split image into Blue, Green, and Red channels
     B, G, R = cv2.split(plant_image)
     B_f, G_f, R_f = B.astype(float), G.astype(float), R.astype(float)
     
+    # Try converting to LAB and HSV color spaces to analyze brightness and color intensity
     try:
         lab_image = cv2.cvtColor(plant_image, cv2.COLOR_BGR2LAB)
         hsv_image = cv2.cvtColor(plant_image, cv2.COLOR_BGR2HSV)
         L, _, _ = cv2.split(lab_image)
         H, _, V = cv2.split(hsv_image)
         if L.size == 0: return np.zeros(plant_image.shape[:2], dtype=np.uint8)
+        
+        # Calculate percentiles to dynamically adapt to the image's overall brightness/color
         l_95 = np.percentile(L, 15)
         h_90 = np.percentile(H, 10)
         v_90 = np.percentile(V, 15)
@@ -44,7 +50,9 @@ def generate_mask(plant_image):
     except Exception:
         return np.zeros(plant_image.shape[:2], dtype=np.uint8)
 
+    # --- 1. REMOVE GLARE / WHITE BACKGROUND ---
     bg_sum = B_f + G_f
+    # 350 is the brightness threshold. Pixels brighter than this are considered glare/background.
     _, too_bright_mask = cv2.threshold(bg_sum, 350, 255, cv2.THRESH_BINARY)
     too_bright_mask = too_bright_mask.astype(np.uint8)
     
@@ -55,21 +63,27 @@ def generate_mask(plant_image):
     image_no_white_bg = cv2.bitwise_and(plant_image, plant_image, mask=valid_parts_mask)
     grayscale_no_white_bg = cv2.cvtColor(image_no_white_bg, cv2.COLOR_BGR2GRAY)
     
+    # Find the outlines (contours) of the remaining non-glare objects
     contours, _ = cv2.findContours(valid_parts_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     valid_pixel_values_count = cv2.countNonZero(valid_parts_mask)
     
     final_combined_mask = None
 
+    # --- 2. CHECK FOR MASSIVE COVERAGE (Image is entirely plant) ---
     if valid_pixel_values_count > 0 and len(contours) > 0:
         max_contour_area = max([cv2.contourArea(c) for c in contours])
         dominance_ratio = max_contour_area / valid_pixel_values_count
+        # If one object dominates 80% of the image and passes color checks, mask the whole thing
         if dominance_ratio > 0.8 and (v_90 + h_90 < 75) and g_90 < 250 and l_95 < 41:
             final_combined_mask = np.ones_like(grayscale_no_white_bg) * 255
     
+    # --- 3. DETAILED PLANT ISOLATION ---
     if final_combined_mask is None:
         final_plant_mask_reconstructed = np.zeros_like(grayscale_no_white_bg)
         h, w = grayscale_no_white_bg.shape[:2]
         total_image_area = h * w
+        
+        # Calculate a strict brightness limit dynamically based on the 90th percentile of valid pixels
         rgb_sum_map = R_f + G_f + B_f
         valid_pixels = rgb_sum_map[valid_parts_mask > 0]
         if len(valid_pixels) > 0:
@@ -78,18 +92,23 @@ def generate_mask(plant_image):
         else:
             STRICT_BRIGHTNESS_LIMIT = 450
         
+        # Loop through every object found
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area < MIN_PART_AREA: continue
+            if area < MIN_PART_AREA: continue # Skip tiny noise specks
+            
             part_isolation_mask = np.zeros_like(grayscale_no_white_bg)
             cv2.drawContours(part_isolation_mask, [contour], -1, 255, cv2.FILLED)
             isolated_part_rgb = cv2.bitwise_and(image_no_white_bg, image_no_white_bg, mask=part_isolation_mask)
             
+            # -> Strategy A: For large plants, just filter out bright spots and fill small holes
             if area > (total_image_area * GIANT_PLANT_RATIO):
                 B_part, G_part, R_part = cv2.split(isolated_part_rgb)
                 bg_sum_part = B_part.astype(float) + G_part.astype(float) + R_part.astype(float)
                 _, too_bright_strict = cv2.threshold(bg_sum_part, STRICT_BRIGHTNESS_LIMIT, 255, cv2.THRESH_BINARY)
                 strict_part_mask = cv2.bitwise_and(part_isolation_mask, cv2.bitwise_not(too_bright_strict.astype(np.uint8)))
+                
+                # Fill in holes smaller than 1000 pixels inside the leaf
                 holes_inv = cv2.bitwise_not(strict_part_mask)
                 holes_inv = cv2.bitwise_and(holes_inv, part_isolation_mask)
                 cnts_holes, _ = cv2.findContours(holes_inv, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -97,11 +116,14 @@ def generate_mask(plant_image):
                     if cv2.contourArea(hole) < 1000:
                         cv2.drawContours(strict_part_mask, [hole], -1, 255, cv2.FILLED)
                 final_plant_mask_reconstructed = cv2.bitwise_or(final_plant_mask_reconstructed, strict_part_mask)
+            
+            # -> Strategy B: For smaller/medium plants, use Excess Green (ExG) index to strictly verify color
             else:
                 isolated_part_lab = cv2.cvtColor(isolated_part_rgb, cv2.COLOR_BGR2LAB)
                 l_chan, a_chan, _ = cv2.split(isolated_part_lab)
                 content_mask_adaptive = (l_chan > 5).astype(np.uint8) * 255
                 pixel_count_total = cv2.countNonZero(content_mask_adaptive)
+                
                 if pixel_count_total > 0:
                     a_neutral = a_chan.copy()
                     a_neutral[content_mask_adaptive == 0] = 128
@@ -109,31 +131,40 @@ def generate_mask(plant_image):
                     mask_lab = cv2.bitwise_and(adaptive_thresh_strict, content_mask_adaptive)
                     mask_lab = cv2.morphologyEx(mask_lab, cv2.MORPH_OPEN, np.ones((3,3), np.uint8))
                     
+                    # Excess Green (ExG) Formula: Highlights green vegetation
                     B_part, G_part, R_part = cv2.split(isolated_part_rgb)
                     exg_part_raw = G_part.astype(float)*3.2 - (B_part.astype(float))-(R_part.astype(float))*1.2
                     exg_part_norm = cv2.normalize(exg_part_raw, None, 0, 255, cv2.NORM_MINMAX)
                     exg_part_uint8 = exg_part_norm.astype(np.uint8)
+                    
                     mask_exg_adaptive = cv2.adaptiveThreshold(exg_part_uint8, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 41, 15)
                     _, mask_exg_abs = cv2.threshold(exg_part_raw, 0, 255, cv2.THRESH_BINARY)
                     mask_exg = cv2.bitwise_and(mask_exg_adaptive, mask_exg_abs.astype(np.uint8))
                     mask_exg = cv2.bitwise_and(mask_exg, content_mask_adaptive)
+                    
                     mask_combined = cv2.bitwise_or(mask_lab, mask_exg)
                     pixel_count_kept = cv2.countNonZero(mask_combined)
                     keep_ratio = pixel_count_kept / pixel_count_total
+                    
+                    # If enough of the object is confirmed "green", keep the whole outline
                     is_medium = area > (total_image_area * MEDIUM_PART_RATIO)
                     if is_medium and keep_ratio < MIN_KEEP_RATIO:
                         final_plant_mask_reconstructed = cv2.bitwise_or(final_plant_mask_reconstructed, part_isolation_mask)
                     else:
                         final_plant_mask_reconstructed = cv2.bitwise_or(final_plant_mask_reconstructed, mask_combined)
 
+        # --- 4. FINAL CLEANUP ---
         union_mask = final_plant_mask_reconstructed 
         inverse_mask = cv2.bitwise_not(union_mask)
         contours_holes, _ = cv2.findContours(inverse_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         MAX_GLOBAL_HOLE_SIZE = 5000
+        
+        # Fill in any global gaps inside the plant canopy
         for hole in contours_holes:
             if cv2.contourArea(hole) < MAX_GLOBAL_HOLE_SIZE:
                 cv2.drawContours(union_mask, [hole], -1, 255, cv2.FILLED)
         
+        # Final safety check against glare
         bg_sum = B_f + G_f
         _, too_bright_mask_final = cv2.threshold(bg_sum, 325, 255, cv2.THRESH_BINARY)
         allowed_intensity_mask = cv2.bitwise_not(too_bright_mask_final.astype(np.uint8))
@@ -143,6 +174,18 @@ def generate_mask(plant_image):
     return final_combined_mask
 
 def run_mask(input_folder, output_zip_path, progress_callback=None):
+    """
+    Segments green plant matter from the background using HSV color thresholding.
+    Generates binary mask images and archives them into a ZIP file.
+
+    Args:
+        input_dir (str): Directory containing the images to be masked.
+        base_dir (str): Root directory where the output ZIP should be placed.
+        progress_callback (function, optional): Callback to update the frontend UI progress bar (0.0 to 1.0).
+
+    Returns:
+        str: The absolute path to the generated ZIP file containing the masks.
+    """
     output_folder = os.path.join(tempfile.gettempdir(), "masks_temp")
     if os.path.exists(output_folder): shutil.rmtree(output_folder)
     os.makedirs(output_folder, exist_ok=True)
@@ -162,6 +205,19 @@ def run_mask(input_folder, output_zip_path, progress_callback=None):
     return zip_output_folder(Path(output_folder), Path(zip_file))
 
 def run_timelapse(folder, output_path, fps, size=None):
+    """
+    Reads images from the input directory and sequentially writes them into an MP4 video file 
+    using OpenCV's VideoWriter.
+
+    Args:
+        input_dir (str): Path to the folder containing the chronological image sequence.
+        output_path (str): File path where the resulting .mp4 will be saved.
+        fps (float): Frames per second for the video playback.
+        size (tuple): The (width, height) resolution of the output video.
+
+    Returns:
+        bool: True if video generation was successful, False otherwise.
+    """
     image_files = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
     if not image_files: return False
     frames = []
@@ -198,6 +254,15 @@ def run_timelapse(folder, output_path, fps, size=None):
         return False
 
 def run_cropping(input_folder, output_folder, roi):
+    """
+    Iterates through images in the input directory, crops them based on the 
+    Region of Interest (ROI), and saves the results.
+
+    Args:
+        input_dir (str): Path to the folder containing source images.
+        output_dir (str): Path to the folder where cropped images will be saved.
+        roi (tuple): A tuple of (x, y, width, height) representing the bounding box.
+    """
     os.makedirs(output_folder, exist_ok=True)
     x, y, w, h = roi
     count = 0
@@ -232,6 +297,17 @@ def pixlCount(mask_folder):
     return pixel_count_list, file_list
 
 def run_graph(input_folder, output_zip_base):
+    """
+    Calculates the percentage of white pixels (representing plant matter) in each binary mask.
+    Plots this area data over time using Matplotlib and exports the raw data to a CSV.
+
+    Args:
+        mask_dir (str): Directory containing the chronological binary mask images.
+        base_dir (str): Root directory to save the output graph and CSV.
+
+    Returns:
+        str: The absolute path to the generated ZIP file containing the graph and CSV.
+    """
     output_folder = tempfile.mkdtemp(prefix="graphs_")
     os.makedirs(output_folder, exist_ok=True)
     
