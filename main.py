@@ -82,10 +82,23 @@ def get_current_total_size():
             pass
     return total_bytes
 def copy_files_to_temp(file_paths, temp_dir):
+    """
+    Copies a list of uploaded files to an isolated temporary directory.
+    This prevents backend processing from altering or corrupting the original uploaded images.
+
+    Args:
+        file_paths (list of str/Path): Absolute paths to the source files.
+        temp_dir (str/Path): The destination temporary directory.
+    """
     for src_path in file_paths:
         shutil.copy2(src_path, os.path.join(temp_dir, os.path.basename(src_path)))
 
 def update_file_list_display():
+    """
+    Refreshes the NiceGUI file list container to reflect the currently active files.
+    Visualizes the status of the current working set (Originals, Cropped, or Masks) 
+    using color-coded UI chips.
+    """
     if file_list_container:
         file_list_container.clear()
         with file_list_container:
@@ -123,6 +136,14 @@ def get_file_info(event):
     return file_name, content_obj
 
 async def save_uploaded_file(event):
+    """
+    Handles incoming file uploads from the UI. 
+    Enforces system stability by checking file size limits (Max 70MB total) 
+    and file count constraints (Max 20 files). Saves valid files to the UPLOAD_DIR.
+
+    Args:
+        event: The NiceGUI upload event containing file metadata and the byte stream.
+    """
     global limit_popup_shown, pending_size, pending_count
     
     # Reset flags if this is a fresh batch (list is empty and nothing pending)
@@ -231,6 +252,14 @@ def revert_to_originals():
     safe_notify("Start over: Reverted to original images.")
 
 def on_image_click(e: events.MouseEventArguments):
+    """
+    Captures mouse click coordinates on the source image to define a cropping region.
+    Draws visual indicators on the image. Once 4 points are selected, it automatically 
+    triggers the cropping pipeline.
+
+    Args:
+        e (events.MouseEventArguments): Contains the x, y coordinates of the user's click.
+    """
     global ii
     if len(clicks) < 4:
         color = 'SkyBlue' if e.type == 'mousedown' else 'SteelBlue'
@@ -246,6 +275,11 @@ def on_image_click(e: events.MouseEventArguments):
             ui.timer(0.5, crop_ready, once=True)
 
 def crop_ready():
+    """
+    Calculates a standard bounding box (x, y, width, height) from the 4 user-selected points.
+    Offloads the cropping of all active images to the backend, updates the active file list 
+    to the newly cropped images, and triggers a ZIP download for the user.
+    """
     x_coords = [pt[0] for pt in clicks]
     y_coords = [pt[1] for pt in clicks]
     x, y, w, h = int(min(x_coords)), int(min(y_coords)), int(max(x_coords)-min(x_coords)), int(max(y_coords)-min(y_coords))
@@ -310,6 +344,13 @@ def show_first_image():
     ui.timer(0.1, lambda: image_container.run_method('scrollIntoView', {'behavior': 'smooth', 'block': 'center'}), once=True)
 
 async def process_timelapse(fps):
+    """
+    Asynchronously compiles the active sequence of images into an MP4 timelapse video 
+    without freezing the web interface.
+
+    Args:
+        fps (float): Frames per second for the output video, determined by the UI slider.
+    """
     import asyncio # Ensure asyncio is imported
     source_files = latest_color_paths if latest_color_paths else uploaded_file_paths
     
@@ -356,6 +397,11 @@ async def process_timelapse(fps):
         shutil.rmtree(temp_input, ignore_errors=True)
 
 async def process_masking():
+    """
+    Passes the active images to the backend segmentation algorithm to generate 
+    high-contrast, black-and-white masks. Automatically updates the active file list 
+    to these new masks and triggers a ZIP download.
+    """
     source_files = latest_color_paths if latest_color_paths else uploaded_file_paths
     
     if not source_files: return
@@ -403,6 +449,11 @@ async def process_masking():
         p_dialog.close()
 
 async def process_growth():
+    """
+    Analyzes mask images to calculate plant vegetation coverage over time. 
+    If the current active files are raw images, it will automatically generate masks first.
+    Compiles the resulting data into a graph and CSV, zips them, and triggers a download.
+    """
     import asyncio # Ensure asyncio is imported
     if not uploaded_file_paths: return
     
