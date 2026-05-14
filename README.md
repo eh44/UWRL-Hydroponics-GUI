@@ -13,11 +13,11 @@ Growth charts: Make sure the cropped images are the uploaded images (reload page
 
 Requirements for set up
 Supplies needed
-One Raspberry 4
-A USB camera with a fish eye lense
+One Raspberry Pi 4 with power supply
+A USB camera with a fish eye lens
 3d printer
 4 zip ties
-4 screws (name the size)
+4 screws that fit in the Raspberry Pi
 
 Clone this repository by running the following command in a terminal, preferably in linux or WSL
 ```bash
